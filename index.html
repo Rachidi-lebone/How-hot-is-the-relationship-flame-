@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Sunshine — How Hot Is The Flame?</title>
+<style>
+  :root{
+    --bgNearBlack:#0A0A0A;
+    --surfaceDark:#141414;
+    --accentAmber:#E2A85A;
+    --textOnBlack:#FFFFFF;
+  }
+  html,body{
+    margin:0; padding:0; background:var(--bgNearBlack); color:var(--textOnBlack);
+    height:100%; overflow:auto; font-family: system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji","Segoe UI Emoji";
+  }
+  .stage{
+    position:relative; width:100vw; min-height:100svh;
+    display:flex; align-items:center; justify-content:center;
+    background: radial-gradient(1200px circle at 50% 60%, #101820, #0A0A0A 60%, #060606 100%);
+    padding-bottom: calc(200px + env(safe-area-inset-bottom, 0px));
+  }
+  canvas{
+    position:absolute; inset:0; width:100%; height:100%;
+    touch-action: pan-y;
+  }
+  h1{
+    position:absolute; top:12px; left:0; right:0;
+    margin:0; font-weight:700; font-size:clamp(20px, 4.2vw, 44px);
+    letter-spacing:0.5px; text-align:center; padding:0 12px;
+    color:#fff;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.6), 0 0 18px rgba(255,180,90,0.08);
+    pointer-events:none;
+    z-index:5;
+  }
+  .controls{
+    position:fixed; bottom: calc(12px + env(safe-area-inset-bottom, 0px)); left:50%; transform:translateX(-50%);
+    display:flex; gap:18px; z-index:999;
+    background:rgba(20,20,20,0.55);
+    backdrop-filter: blur(6px);
+    padding:14px 16px; border-radius:16px;
+    box-shadow: 0 10px 24px rgba(0,0,0,0.4), inset 0 0 0 1px rgba(255,255,255,0.05);
+  }
+  .btn{
+    min-width:96px; min-height:80px;
+    padding:0 16px;
+    border-radius:14px; border:none;
+    background:linear-gradient(#1b1b1b, #141414);
+    color:#fff; font-size:clamp(18px, 3.5vw, 26px); font-weight:700;
+    box-shadow: inset 0 0 0 2px rgba(255,255,255,0.08), 0 8px 16px rgba(0,0,0,0.5);
+    transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+    touch-action: manipulation;
+  }
+  .btn:focus-visible{
+    outline: none;
+    box-shadow: inset 0 0 0 2px var(--accentAmber), 0 0 0 3px rgba(226,168,90,0.35), 0 8px 16px rgba(0,0,0,0.5);
+  }
+  .btn:active{ transform: scale(0.98); }
+  .btn--accent{
+    background: linear-gradient(#2a251c, #1c1813);
+    color:#fff;
+    box-shadow: inset 0 0 0 2px rgba(226,168,90,0.6), 0 8px 22px rgba(226,168,90,0.25);
+  }
+  .toast{
+    position:absolute; bottom:110px; left:50%; transform:translateX(-50%);
+    background:rgba(20,20,20,0.88); color:#fff; padding:12px 18px;
+    border-radius:10px; font-size:clamp(14px, 2.8vw, 18px);
+    box-shadow: 0 8px 18px rgba(0,0,0,0.45), inset 0 0 0 1px rgba(255,255,255,0.06);
+    opacity:0; pointer-events:none; transition: opacity 160ms ease;
+    z-index:7;
+    white-space:nowrap;
+  }
+  .toast.show{ opacity:1; }
+  /* Small tag near Sunshine */
+  .readout{
+    position:absolute; z-index:6;
+    padding:6px 10px; border-radius:10px;
+    font-weight:600; font-size:clamp(12px, 2.5vw, 16px);
+    color:#fff; background:rgba(20,20,20,0.6);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06), 0 8px 16px rgba(0,0,0,0.35);
+    backdrop-filter: blur(4px);
+    transform: translate(-50%, -50%);
+    pointer-events:none;
+  }
+@supports not (height: 100svh) {
+  .stage { min-height: 100vh; }
+}
+</style>
+</head>
+<body>
+  <div class="stage" id="stage">
+    <h1>How hot is the flame?</h1>
+    <canvas id="gameCanvas" aria-label="Sunshine canvas" role="img"></canvas>
+    <div class="readout" id="readout">7/10</div>
+    <div class="controls" role="group" aria-label="Flame intensity controls">
+      <button class="btn" id="decBtn" aria-label="Decrease intensity">–</button>
+      <button class="btn btn--accent" id="submitBtn" aria-label="Submit level">Submit</button>
+      <button class="btn" id="incBtn" aria-label="Increase intensity">+</button>
+    </div>
+    <div class="toast" id="toast" aria-live="polite"></div>
+  </div>
+
+<script>
+/* Constants */
+const WEBHOOK_URL = "https://script.google.com/macros/s/AKfycby1kdVyPljFhUx-XaKcsDVp44rwib5ERfwYQ_JFJmHSs3pGWyoPUoQARQ9AYdWEkgdc/exec";
+const RECIPIENT = "Sunshine";
+
+/* Utility */
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+
+/* Game Class */
+class Game {
+  constructor(canvas, readoutEl){
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.readoutEl = readoutEl;
+    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    this.level = clamp(parseInt(localStorage.getItem('sunshineLevel') || '7', 10) || 7, 1, 10);
+    this.hero = { x: 0, y: 0, baseR: 42, time: 0 };
+    this.particles = [];
+    this.maxParticles = 240;
+    this.lastTime = performance.now();
+    this.fps = 60;
+    this.hud = { show:false, lastTick:performance.now(), frames:0, fps:60 };
+    this.safeTop = 0; // updated on resize based on H1
+    this.mistPhase = 0;
+    this.wallGlow = { left: {}, right:{} };
+    this.resize();
+    this.updateReadout();
+    window.addEventListener('resize', () => this.resize());
+    this.loop = this.loop.bind(this);
+    requestAnimationFrame(this.loop);
+  }
+
+  resize(){
+    const rect = this.canvas.getBoundingClientRect();
+    this.canvas.width = Math.floor(rect.width * this.dpr);
+    this.canvas.height = Math.floor(rect.height * this.dpr);
+    this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+
+    const w = rect.width;
+    const h = rect.height;
+    this.hero.x = w / 2;
+    this.hero.y = h * 0.52;
+
+    const h1 = document.querySelector('h1');
+    this.safeTop = (h1?.getBoundingClientRect().bottom || 100) + 24;
+
+    // Precompute torch halos positions
+    this.wallGlow.left = { x: w*0.12, y: h*0.52, r: Math.min(w,h)*0.18 };
+    this.wallGlow.right = { x: w*0.88, y: h*0.52, r: Math.min(w,h)*0.18 };
+  }
+
+  levelFactor(){
+    // 1 -> 0.6, 10 -> 1.6
+    return 0.6 + (this.level - 1) * (1.0/9);
+  }
+
+  levelColor(){
+    // 1–4 amber, 5–7 vibrant orange, 8–10 blue-white blend
+    if (this.level <= 4) return '#E2A85A';
+    if (this.level <= 7) return '#FF7A1A';
+    // blend towards white at 10
+    const t = (this.level - 8) / 2; // 8->0, 10->1
+    const mix = (c1, c2, t) => {
+      const a = c1.match(/\w\w/g).map(x=>parseInt(x,16));
+      const b = c2.match(/\w\w/g).map(x=>parseInt(x,16));
+      const m = a.map((v,i)=>Math.round(lerp(v,b[i],t)));
+      return '#'+m.map(x=>x.toString(16).padStart(2,'0')).join('');
+    };
+    return mix('9AD7FF','FFFFFF', clamp(t,0,1));
+  }
+
+  particlesTarget(){
+    // scale with level: 140 at 1 -> 360 at 10
+    return Math.round(lerp(140, 360, (this.level-1)/9));
+  }
+
+  spawnParticle(){
+    const w = this.canvas.width / this.dpr, h = this.canvas.height / this.dpr;
+    const spread = lerp(60, 160, (this.level-1)/9);
+    const px = this.hero.x + (Math.random()*2-1) * spread;
+    const py = this.hero.y + (Math.random()*2-1) * 20 + 6;
+    const size = lerp(1.4, 3.6, (this.level-1)/9) * (0.6 + Math.random()*0.8);
+    const speed = lerp(30, 95, (this.level-1)/9) * (0.8 + Math.random()*0.6);
+    const life = lerp(0.8, 1.8, (this.level-1)/9) * (0.7 + Math.random()*0.6);
+    const hue = this.level <= 7 ? (this.level<=4 ? 38 : 24) : 205;
+    const col = this.level <= 7 ? (this.level<=4 ? 'rgba(226,168,90,1)' : 'rgba(255,122,26,1)') : 'rgba(154,215,255,1)';
+    this.particles.push({ x:px, y:py, vx:(Math.random()*2-1)*18, vy:-speed, size, life, age:0, color:col, hue, alpha:1 });
+    if (this.particles.length > this.particlesTarget()) this.particles.shift();
+  }
+
+  drawBackground(){
+    const ctx = this.ctx;
+    const w = this.canvas.width / this.dpr, h = this.canvas.height / this.dpr;
+
+    // Base stone walls gradient
+    const wall = ctx.createLinearGradient(0,0,0,h);
+    wall.addColorStop(0,'#0b0f14');
+    wall.addColorStop(0.6,'#0A0A0A');
+    wall.addColorStop(1,'#090909');
+    ctx.fillStyle = wall;
+    ctx.fillRect(0,0,w,h);
+
+    // Side torch halos (low-poly/painted feel via soft radial)
+    const drawTorch = (gx) => {
+      const g = ctx.createRadialGradient(gx.x, gx.y, gx.r*0.05, gx.x, gx.y, gx.r);
+      g.addColorStop(0, 'rgba(255,180,90,0.28)');
+      g.addColorStop(0.35, 'rgba(255,150,60,0.18)');
+      g.addColorStop(0.7, 'rgba(255,120,40,0.08)');
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(gx.x, gx.y, gx.r, 0, Math.PI*2); ctx.fill();
+      // Simple torch head
+      ctx.fillStyle = '#2b2b2b';
+      ctx.fillRect(gx.x-8, gx.y+gx.r*0.4, 16, gx.r*0.25);
+      ctx.fillStyle = '#3a2c1a';
+      ctx.fillRect(gx.x-5, gx.y+gx.r*0.3, 10, gx.r*0.1);
+    };
+    drawTorch(this.wallGlow.left);
+    drawTorch(this.wallGlow.right);
+
+    // Floor mist — gentle sweeping band near bottom
+    this.mistPhase += 0.0025;
+    const mistY = h * 0.78 + Math.sin(this.mistPhase*2)*6;
+    const mg = ctx.createLinearGradient(0, mistY-60, 0, mistY+140);
+    mg.addColorStop(0, 'rgba(200,220,255,0.0)');
+    mg.addColorStop(0.35, 'rgba(200,220,255,0.06)');
+    mg.addColorStop(0.8, 'rgba(200,220,255,0.10)');
+    mg.addColorStop(1, 'rgba(200,220,255,0.0)');
+    ctx.fillStyle = mg;
+    ctx.fillRect(0, mistY-60, w, 180);
+
+    // Subtle vignette
+    const vg = ctx.createRadialGradient(w*0.5, h*0.6, Math.min(w,h)*0.3, w*0.5, h*0.6, Math.max(w,h)*0.8);
+    vg.addColorStop(0, 'rgba(0,0,0,0)');
+    vg.addColorStop(1, 'rgba(0,0,0,0.6)');
+    ctx.fillStyle = vg;
+    ctx.fillRect(0,0,w,h);
+
+    // Keep top region clean (dark overlay near H1 to ensure readability)
+    const topClean = ctx.createLinearGradient(0,0,0,this.safeTop+10);
+    topClean.addColorStop(0,'rgba(0,0,0,0.55)');
+    topClean.addColorStop(1,'rgba(0,0,0,0.00)');
+    ctx.fillStyle = topClean;
+    ctx.fillRect(0,0,w,this.safeTop+10);
+  }
+
+  drawHero(){
+    const ctx = this.ctx;
+    const w = this.canvas.width / this.dpr, h = this.canvas.height / this.dpr;
+    this.hero.time += 0.016;
+    const bob = Math.sin(this.hero.time*2.2) * 8;
+    const x = this.hero.x, y = this.hero.y + bob;
+
+    // Glow
+    const glowFactor = this.levelFactor();
+    const glowR = this.hero.baseR * glowFactor * 3.2;
+    const outer = ctx.createRadialGradient(x, y, this.hero.baseR*0.2, x, y, glowR);
+    const col = this.levelColor();
+    const rgba = (hex, a)=> { 
+      const m = hex.match(/\w\w/g).map(v=>parseInt(v,16));
+      return `rgba(${m[0]},${m[1]},${m[2]},${a})`;
+    };
+    outer.addColorStop(0, rgba(col, 0.35));
+    outer.addColorStop(0.4, rgba(col, 0.16));
+    outer.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = outer;
+    ctx.beginPath(); ctx.arc(x,y, glowR, 0, Math.PI*2); ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+
+    // Orb body
+    const g = ctx.createRadialGradient(x-8, y-8, this.hero.baseR*0.1, x, y, this.hero.baseR*1.1);
+    g.addColorStop(0, rgba(col, 1));
+    g.addColorStop(1, rgba('#000000', 0.0));
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(x,y, this.hero.baseR, 0, Math.PI*2); ctx.fill();
+
+    // Sunbeam crown — simple spikes
+    const spikes = 10;
+    ctx.strokeStyle = rgba(col, 0.85);
+    ctx.lineWidth = 2.2;
+    for(let i=0;i<spikes;i++){
+      const ang = (i/spikes) * Math.PI*2;
+      const r1 = this.hero.baseR+6;
+      const r2 = r1 + 10 + Math.sin(this.hero.time*3 + i)*2;
+      ctx.beginPath();
+      ctx.moveTo(x + Math.cos(ang)*r1, y + Math.sin(ang)*r1);
+      ctx.lineTo(x + Math.cos(ang)*r2, y + Math.sin(ang)*r2);
+      ctx.stroke();
+    }
+
+    // Face: dot eyes + tiny smile
+    ctx.fillStyle = 'rgba(20,20,20,0.9)';
+    ctx.beginPath(); ctx.arc(x-10, y-6, 3.2, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x+10, y-6, 3.2, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle = 'rgba(20,20,20,0.9)';
+    ctx.lineWidth = 2.0;
+    ctx.beginPath();
+    ctx.arc(x, y+6, 9, Math.PI*0.15, Math.PI- Math.PI*0.15);
+    ctx.stroke();
+
+    // Readout position update
+    const tag = document.getElementById('readout');
+    tag.style.left = `${x + 0}px`;
+    tag.style.top = `${y - this.hero.baseR - 26}px`;
+  }
+
+  updateParticles(dt){
+    // Spawn more when level high
+    const toTarget = this.particlesTarget() - this.particles.length;
+    const spawns = Math.min(8, Math.max(1, Math.round(toTarget*0.05)));
+    for(let i=0;i<spawns;i++) this.spawnParticle();
+
+    const topLimit = this.safeTop + 6;
+    for(let i=this.particles.length-1;i>=0;i--){
+      const p = this.particles[i];
+      p.age += dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.alpha = Math.max(0, 1 - p.age / p.life);
+      // fade faster near top clean area
+      if (p.y < topLimit) p.alpha *= 0.25;
+      if (p.age >= p.life || p.y < -20) this.particles.splice(i,1);
+    }
+  }
+
+  drawParticles(){
+    const ctx = this.ctx;
+    ctx.globalCompositeOperation = 'lighter';
+    for(const p of this.particles){
+      if (p.alpha <= 0.01) continue;
+      ctx.fillStyle = p.color.replace(/,1\)/, `,${(0.6*p.alpha).toFixed(3)})`);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI*2);
+      ctx.fill();
+      // trailing streak
+      ctx.strokeStyle = p.color.replace(/,1\)/, `,${(0.35*p.alpha).toFixed(3)})`);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.lineTo(p.x, p.y + 8);
+      ctx.stroke();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  loop(now){
+    const dt = Math.min(0.05, (now - this.lastTime) / 1000);
+    this.lastTime = now;
+    this.update(dt);
+    requestAnimationFrame(this.loop);
+  }
+
+  update(dt){
+    // FPS calc for HUD
+    this.hud.frames++;
+    const now = performance.now();
+    if (now - this.hud.lastTick >= 500){
+      this.hud.fps = Math.round((this.hud.frames*1000) / (now - this.hud.lastTick));
+      this.hud.frames = 0; this.hud.lastTick = now;
+    }
+
+    // Clear + draw
+    this.ctx.clearRect(0,0, this.canvas.width, this.canvas.height);
+    this.drawBackground();
+    this.updateParticles(dt);
+    this.drawParticles();
+    this.drawHero();
+    if (this.hud.show) this.drawHUD();
+  }
+
+  drawHUD(){
+    const ctx = this.ctx;
+    ctx.fillStyle = 'rgba(20,20,20,0.65)';
+    ctx.fillRect(12,12, 210, 88);
+    ctx.fillStyle = '#fff';
+    ctx.font = '12px system-ui';
+    const ls = localStorage.getItem('sunshineLevel');
+    ctx.fillText(`Level: ${this.level}`, 20, 32);
+    ctx.fillText(`Particles: ${this.particles.length}`, 20, 52);
+    ctx.fillText(`FPS: ${this.hud.fps}`, 20, 72);
+    ctx.fillText(`localStorage: ${ls}`, 20, 92);
+  }
+
+  setLevel(lv){
+    const newLevel = clamp(lv, 1, 10);
+    if (newLevel === this.level) return;
+    this.level = newLevel;
+    localStorage.setItem('sunshineLevel', String(this.level));
+    this.updateReadout();
+  }
+
+  updateReadout(){
+    this.readoutEl.textContent = `${this.level}/10`;
+  }
+}
+
+/* Init */
+const canvas = document.getElementById('gameCanvas');
+const readoutEl = document.getElementById('readout');
+const game = new Game(canvas, readoutEl);
+
+/* Controls */
+const decBtn = document.getElementById('decBtn');
+const incBtn = document.getElementById('incBtn');
+const submitBtn = document.getElementById('submitBtn');
+const toastEl = document.getElementById('toast');
+
+const showToast = (msg) => {
+  toastEl.textContent = msg;
+  toastEl.classList.add('show');
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(()=> toastEl.classList.remove('show'), 2300);
+};
+
+const changeLevel = (delta) => {
+  game.setLevel(game.level + delta);
+};
+
+const onPress = (el, handler) => {
+  const f = (e)=>{ e.preventDefault(); handler(); };
+  el.addEventListener('click', f, { passive:false });
+  el.addEventListener('touchstart', f, { passive:false });
+};
+
+onPress(decBtn, ()=> changeLevel(-1));
+onPress(incBtn, ()=> changeLevel(1));
+
+/* Keyboard support */
+window.addEventListener('keydown', (e)=>{
+  if (e.code === 'ArrowLeft') { changeLevel(-1); }
+  else if (e.code === 'ArrowRight') { changeLevel(1); }
+  else if (e.code === 'Space') { submit(); }
+  else if (e.code === 'KeyT') { game.hud.show = !game.hud.show; }
+});
+
+/* Submission */
+async function submit(){
+  if (submitBtn.disabled) return;
+  submitBtn.disabled = true;
+
+  const payload = new URLSearchParams({
+    level: String(game.level),
+    recipient: RECIPIENT,
+    timestamp: new Date().toISOString(),
+    device: `${window.innerWidth}x${window.innerHeight}`,
+    nonce: crypto.getRandomValues(new Uint32Array(1))[0].toString(16),
+    ua: navigator.userAgent
+  });
+
+  try{
+    const res  = await fetch(WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+      body: payload
+    });
+    const text = await res.text();
+    console.log('Webhook HTTP', res.status, 'body:', text);   // <-- SEE what the server parsed/returned
+    if (!res.ok) throw new Error('HTTP '+res.status+' '+text);
+    showToast('Sent! ❤️');
+  }catch(err){
+    console.error('Submit failed:', err);
+    showToast('Couldn\'t send, try again.');
+    submitBtn.disabled = false; // allow immediate retry
+    return;
+  }
+  setTimeout(()=>{ submitBtn.disabled = false; }, 3000);
+}
+onPress(submitBtn, submit);
+
+/* Initial focus hint for accessibility on desktop */
+submitBtn.tabIndex = 0;
+decBtn.tabIndex = 0;
+incBtn.tabIndex = 0;
+
+/* Prevent long-press context on iOS */
+document.addEventListener('gesturestart', e => e.preventDefault());
+</script>
+</body>
+</html>
